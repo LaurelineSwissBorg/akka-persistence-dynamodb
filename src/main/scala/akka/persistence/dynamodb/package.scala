@@ -4,15 +4,15 @@
 package akka.persistence
 
 import java.nio.ByteBuffer
-import java.util.concurrent.Executors
+import java.util.{ Map ⇒ JMap }
 
 import akka.actor.{ ActorSystem, Scheduler }
 import akka.event.{ Logging, LoggingAdapter }
 import akka.persistence.dynamodb.journal.DynamoDBHelper
-import com.amazonaws.auth.BasicAWSCredentials
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBAsyncClient
+import akka.stream.{ ActorMaterializer, Materializer }
+import akka.stream.alpakka.dynamodb.{ DynamoClient, DynamoSettings }
 import com.amazonaws.services.dynamodbv2.model.{ AttributeValue, AttributeValueUpdate }
-import java.util.{ Map => JMap }
+
 import scala.collection.generic.CanBuildFrom
 import scala.concurrent.{ ExecutionContext, Future, Promise }
 import scala.util.{ Failure, Success, Try }
@@ -44,16 +44,19 @@ package object dynamodb {
     p.future
   }
 
-  def trySequence[A, M[X] <: TraversableOnce[X]](in: M[Future[A]])(implicit
-    cbf: CanBuildFrom[M[Future[A]], Try[A], M[Try[A]]],
-                                                                   executor: ExecutionContext): Future[M[Try[A]]] =
+  def trySequence[A, M[X] <: TraversableOnce[X]](in: M[Future[A]])(
+    implicit
+    cbf:      CanBuildFrom[M[Future[A]], Try[A], M[Try[A]]],
+    executor: ExecutionContext
+  ): Future[M[Try[A]]] =
     in.foldLeft(Future.successful(cbf(in))) { (fr, a) =>
       val fb = lift(a)
       for (r <- fr; b <- fb) yield (r += b)
-    }.map(_.result())
+    }
+      .map(_.result())
 
-  def dynamoClient(system: ActorSystem, settings: DynamoDBConfig): DynamoDBHelper = {
-    val client =
+  def dynamoClient(system: ActorSystem, settings: DynamoDBPluginConfig): DynamoDBHelper = {
+    /*val client =
       if (settings.AwsKey.nonEmpty && settings.AwsSecret.nonEmpty) {
         val conns = settings.client.config.getMaxConnections
         val executor = Executors.newFixedThreadPool(conns)
@@ -62,18 +65,33 @@ package object dynamodb {
       } else {
         new AmazonDynamoDBAsyncClient(settings.client.config)
       }
-    client.setEndpoint(settings.Endpoint)
+    client.setEndpoint(settings.Endpoint)*/
+
+    implicit val sys: ActorSystem = system
+    implicit val mat: Materializer = ActorMaterializer()
+
+    val dynamoSettings = DynamoSettings(settings.DynamoDB.config)
+    val alpakkaDynamoClient = DynamoClient(dynamoSettings)
+
     val dispatcher = system.dispatchers.lookup(settings.ClientDispatcher)
 
     class DynamoDBClient(
       override val ec:        ExecutionContext,
-      override val dynamoDB:  AmazonDynamoDBAsyncClient,
-      override val settings:  DynamoDBConfig,
+      override val sys:       ActorSystem,
+      override val dynamoDB:  DynamoClient,
+      override val settings:  DynamoDBPluginConfig,
       override val scheduler: Scheduler,
       override val log:       LoggingAdapter
     ) extends DynamoDBHelper
 
-    new DynamoDBClient(dispatcher, client, settings, system.scheduler, Logging(system, "DynamoDBClient"))
+    new DynamoDBClient(
+      dispatcher,
+      system,
+      alpakkaDynamoClient,
+      settings,
+      system.scheduler,
+      Logging(system, "DynamoDBClient")
+    )
   }
 
 }

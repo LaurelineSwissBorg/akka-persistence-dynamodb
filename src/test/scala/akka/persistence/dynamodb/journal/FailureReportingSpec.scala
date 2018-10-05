@@ -8,6 +8,7 @@ import org.scalatest.concurrent.ScalaFutures
 import org.scalactic.ConversionCheckedTripleEquals
 import akka.actor._
 import akka.testkit._
+
 import scala.concurrent.duration._
 import com.typesafe.config.ConfigFactory
 import akka.persistence._
@@ -15,8 +16,10 @@ import com.amazonaws.services.dynamodbv2.model._
 import akka.event.Logging
 import akka.persistence.JournalProtocol._
 import java.util.UUID
+
 import scala.collection.JavaConverters._
 import akka.persistence.dynamodb._
+import com.amazonaws.AmazonWebServiceRequest
 
 class FailureReportingSpec extends TestKit(ActorSystem("FailureReportingSpec"))
     with ImplicitSender
@@ -49,7 +52,6 @@ class FailureReportingSpec extends TestKit(ActorSystem("FailureReportingSpec"))
 
   override def beforeAll(): Unit = ensureJournalTableExists()
   override def afterAll(): Unit = {
-    client.shutdown()
     system.terminate().futureValue
   }
 
@@ -103,9 +105,10 @@ class FailureReportingSpec extends TestKit(ActorSystem("FailureReportingSpec"))
     "not notify user about config errors when starting the default journal" in {
       val config = ConfigFactory.parseString("""
 dynamodb-journal {
-  endpoint = "http://localhost:8000"
-  aws-access-key-id = "set something in case no real creds are there"
-  aws-secret-access-key = "set something in case no real creds are there"
+  dynamodb = {
+      host = "localhost"
+      post = 8000
+  }
 }
 akka.persistence.journal.plugin = "dynamodb-journal"
 akka.persistence.snapshot-store.plugin = "no-snapshot-store"
@@ -185,7 +188,7 @@ akka.loggers = ["akka.testkit.TestEventListener"]
 
     "have sensible error messages" when {
       import client._
-      def desc[T](aws: T)(implicit d: Describe[_ >: T]): String = d.desc(aws)
+      def desc(aws: AmazonWebServiceRequest): String = Describe.describe(aws)
       val keyItem = Map(Key -> S("TheKey"), Sort -> N("42")).asJava
       val key2Item = Map(Key -> S("The2Key"), Sort -> N("43")).asJava
 

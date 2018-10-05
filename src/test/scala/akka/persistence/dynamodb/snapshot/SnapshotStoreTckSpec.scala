@@ -23,6 +23,5 @@ class SnapshotStoreTckSpec extends SnapshotStoreSpec(
 
   override def afterAll(): Unit = {
     super.afterAll()
-    client.shutdown()
   }
 }

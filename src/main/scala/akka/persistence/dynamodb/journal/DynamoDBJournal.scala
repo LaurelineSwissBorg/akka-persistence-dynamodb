@@ -4,28 +4,23 @@
 package akka.persistence.dynamodb.journal
 
 import java.nio.ByteBuffer
-import java.util.{ HashMap => JHMap, Map => JMap }
+import java.util.{ HashMap ⇒ JHMap, Map ⇒ JMap }
+
 import akka.Done
-import akka.actor.{ ActorLogging, ActorRefFactory, ActorSystem }
-import akka.event.{ Logging, LoggingAdapter }
+import akka.actor.{ ActorLogging, ActorRef }
 import akka.pattern.pipe
+import akka.persistence.dynamodb._
 import akka.persistence.journal.AsyncWriteJournal
 import akka.persistence.{ AtomicWrite, Persistence, PersistentRepr }
 import akka.serialization.SerializationExtension
 import akka.stream.ActorMaterializer
 import akka.util.ByteString
-import com.amazonaws.AmazonServiceException
-import com.amazonaws.auth.BasicAWSCredentials
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBClient
 import com.amazonaws.services.dynamodbv2.model._
 import com.typesafe.config.Config
+
 import scala.collection.immutable
-import scala.concurrent.{ ExecutionContext, Future }
-import scala.util.{ Try, Success, Failure }
-import scala.util.control.NoStackTrace
-import akka.actor.ActorRef
-import scala.concurrent.Promise
-import akka.persistence.dynamodb._
+import scala.concurrent.{ Future, Promise }
+import scala.util.{ Success, Try }
 
 class DynamoDBJournalFailure(message: String, cause: Throwable = null) extends RuntimeException(message, cause)
 class DynamoDBJournalRejection(message: String, cause: Throwable = null) extends RuntimeException(message, cause)
@@ -69,26 +64,25 @@ private[akka] case class SetDBHelperReporter(ref: ActorRef)
 case class Purged(persistenceId: String)
 
 class DynamoDBJournal(config: Config) extends AsyncWriteJournal with DynamoDBRecovery with DynamoDBJournalRequests with ActorLogging {
-  import context.dispatcher
 
   implicit val materializer = ActorMaterializer()
 
   val extension = Persistence(context.system)
   val serialization = SerializationExtension(context.system)
 
-  val settings = new DynamoDBJournalConfig(config)
+  val settings = new DynamoDBJournalPluginConfig(config)
 
   import settings._
   if (LogConfig) log.info("using settings {}", settings)
 
   val dynamo = dynamoClient(context.system, settings)
 
-  dynamo.describeTable(new DescribeTableRequest().withTableName(JournalTable)).onComplete {
-    case Success(result) => log.info("using DynamoDB table {}", result)
-    case _               => log.error("persistent actor requests will fail until the table '{}' is accessible", JournalTable)
-  }
+  implicit val ec2 = dynamo.ec
 
-  override def postStop(): Unit = dynamo.shutdown()
+  dynamo.describeTable(new DescribeTableRequest().withTableName(Table)).onComplete {
+    case Success(result) => log.info("using DynamoDB table {}", result)
+    case _               => log.error("persistent actor requests will fail until the table '{}' is accessible", Table)
+  }
 
   private case class OpFinished(pid: String, f: Future[Done])
   private val opQueue: JMap[String, Future[Done]] = new JHMap
@@ -135,7 +129,7 @@ class DynamoDBJournal(config: Config) extends AsyncWriteJournal with DynamoDBRec
       for {
         lowest <- lowF
         highest <- highF
-        val upTo = Math.min(toSequenceNr, highest)
+        upTo = Math.min(toSequenceNr, highest)
         _ <- if (upTo + 1 > lowest) setLS(persistenceId, to = upTo + 1) else Future.successful(Done)
         _ <- if (lowest <= upTo) deleteMessages(persistenceId, lowest, upTo) else Future.successful(Done)
       } yield {
@@ -199,7 +193,7 @@ class DynamoDBJournal(config: Config) extends AsyncWriteJournal with DynamoDBRec
     serialization.deserialize(ByteString(b).toArray, classOf[PersistentRepr]).get
   }
 
-  def logFailure[T](desc: String)(f: Future[T]): Future[T] = f.transform(conforms, ex => {
+  def logFailure[T](desc: String)(f: Future[T]): Future[T] = f.transform(identity, ex => {
     log.error(ex, "operation failed: " + desc)
     ex
   })

@@ -3,134 +3,118 @@
  */
 package akka.persistence.dynamodb.journal
 
-import com.amazonaws.{ AmazonServiceException, AmazonWebServiceRequest }
-import com.amazonaws.handlers.AsyncHandler
-import com.amazonaws.services.dynamodbv2.AmazonDynamoDBAsyncClient
-import com.amazonaws.services.dynamodbv2.model._
-import akka.actor.Scheduler
+import java.util.concurrent.atomic.AtomicInteger
+
+import akka.actor.{ ActorRef, ActorSystem, Scheduler }
 import akka.event.LoggingAdapter
-import akka.pattern.after
-import java.util.{ concurrent => juc }
+import akka.persistence.dynamodb.{ DynamoDBPluginConfig, Item }
+import akka.stream.alpakka.dynamodb.scaladsl.DynamoDb
+import akka.stream.alpakka.dynamodb.{ AwsOp, DynamoClient }
+import com.amazonaws.AmazonWebServiceRequest
+import com.amazonaws.services.dynamodbv2.model._
 
 import scala.collection.JavaConverters._
-import scala.concurrent.{ ExecutionContext, Future, Promise }
 import scala.concurrent.duration._
-import scala.reflect.ClassTag
-import scala.util.control.NoStackTrace
-import akka.actor.ActorRef
-import akka.persistence.dynamodb.{ DynamoDBConfig, Item }
+import scala.concurrent.{ ExecutionContext, Future }
 
 case class LatencyReport(nanos: Long, retries: Int)
 private class RetryStateHolder(var retries: Int = 10, var backoff: FiniteDuration = 1.millis)
 
 trait DynamoDBHelper {
 
+  import akka.stream.alpakka.dynamodb.scaladsl.DynamoImplicits._
+
   implicit val ec: ExecutionContext
+  implicit val sys: ActorSystem
   val scheduler: Scheduler
-  val dynamoDB: AmazonDynamoDBAsyncClient
+  val dynamoDB: DynamoClient
   val log: LoggingAdapter
-  val settings: DynamoDBConfig
-  import settings._
+  val settings: DynamoDBPluginConfig
 
-  def shutdown(): Unit = dynamoDB.shutdown()
+  var reporter: Option[ActorRef] = None
+  def setReporter(ref: ActorRef): Unit = this.reporter = Some(ref)
 
-  private var reporter: ActorRef = _
-  def setReporter(ref: ActorRef): Unit = reporter = ref
+  // AlpAkka DynamoDB
 
-  private def send[In <: AmazonWebServiceRequest, Out](aws: In, func: AsyncHandler[In, Out] => juc.Future[Out])(implicit d: Describe[_ >: In]): Future[Out] = {
+  def query(request: QueryRequest): Future[QueryResult] = sendSingleRequest(new Query(request))
 
-    def name = d.desc(aws)
+  def batchGetItem(request: BatchGetItemRequest): Future[BatchGetItemResult] =
+    sendSingleRequest(new BatchGetItem(request))
 
-    def sendSingle(): Future[Out] = {
-      val p = Promise[Out]
+  def putItem(request: PutItemRequest): Future[PutItemResult] =
+    sendSingleRequest(new PutItem(request))
 
-      val handler = new AsyncHandler[In, Out] {
-        override def onError(ex: Exception) = ex match {
-          case e: ProvisionedThroughputExceededException =>
-            p.tryFailure(ex)
-          case _ =>
-            val n = name
-            log.error(ex, "failure while executing {}", n)
-            p.tryFailure(new DynamoDBJournalFailure("failure while executing " + n, ex))
-        }
-        override def onSuccess(req: In, resp: Out) = p.trySuccess(resp)
-      }
+  def deleteItem(request: DeleteItemRequest): Future[DeleteItemResult] =
+    sendSingleRequest(new DeleteItem(request))
 
-      try {
-        func(handler)
-      } catch {
-        case ex: Throwable =>
-          log.error(ex, "failure while preparing {}", name)
-          p.tryFailure(ex)
-      }
+  def batchWriteItem(request: BatchWriteItemRequest): Future[BatchWriteItemResult] =
+    sendSingleRequest(new BatchWriteItem(request))
 
-      p.future
-    }
+  def describeTable(request: DescribeTableRequest): Future[DescribeTableResult] =
+    sendSingleRequest(new DescribeTable(request))
 
-    val state = new RetryStateHolder
+  def listTables(request: ListTablesRequest): Future[ListTablesResult] =
+    sendSingleRequest(new ListTables(request))
 
-    lazy val retry: PartialFunction[Throwable, Future[Out]] = {
-      case _: ProvisionedThroughputExceededException if state.retries > 0 =>
-        val backoff = state.backoff
-        state.retries -= 1
-        state.backoff *= 2
-        after(backoff, scheduler)(sendSingle().recoverWith(retry))
-      case other => Future.failed(other)
-    }
+  def createTable(request: CreateTableRequest): Future[CreateTableResult] =
+    sendSingleRequest(new CreateTable(request))
 
-    if (Tracing) log.debug("{}", name)
-    val start = if (reporter ne null) System.nanoTime else 0L
+  private[journal] def sendSingleRequest(awsOp: AwsOp): Future[awsOp.B] = {
 
-    // backoff retries when sending too fast
-    val f = sendSingle().recoverWith(retry)
+    val remainingRetries = new AtomicInteger(settings.ApiRequestMaxRetries)
+    val initialBackoff = settings.ApiRequestInitialBackoff.millis
+    val start = System.nanoTime()
+    val operationName = Describe.describe(awsOp.request)
+    val f = retry(initialBackoff, remainingRetries)(() => DynamoDb.single(awsOp))
 
-    if (reporter ne null) f.onComplete(_ => reporter ! LatencyReport(System.nanoTime - start, 10 - state.retries))
+    reporter.foreach(r => f.onComplete(_ => r ! LatencyReport(System.nanoTime - start, settings.ApiRequestMaxRetries - remainingRetries.get())))
 
-    f
+    // Wrapping the resulting future and log a message. The tests made me do it.
+    // Preserves the log ordering expected by the original tests
+
+    f.asInstanceOf[Future[awsOp.B]]
+      .transform(identity, {
+        case pe: ProvisionedThroughputExceededException => pe
+        case e =>
+          log.error(
+            e,
+            "failure while executing {}",
+            operationName
+          )
+          new DynamoDBJournalFailure("failure while executing " + operationName, e)
+      })
   }
 
-  trait Describe[T] {
-    def desc(t: T): String
-    protected def formatKey(i: Item): String = {
-      val key = i.get(Key) match { case null => "<none>" case x => x.getS }
-      val sort = i.get(Sort) match { case null => "<none>" case x => x.getN }
-      s"[$Key=$key,$Sort=$sort]"
-    }
-  }
-
-  object Describe {
-    implicit object GenericDescribe extends Describe[AmazonWebServiceRequest] {
-      def desc(aws: AmazonWebServiceRequest): String = aws.getClass.getSimpleName
+  def retry[A](backoff: FiniteDuration, retries: AtomicInteger)(f: () => Future[A]): Future[A] = {
+    f().recoverWith {
+      case e: ProvisionedThroughputExceededException =>
+        if (retries.getAndDecrement() > 0) {
+          Future {
+            log.error(s"ProvisionedThroughputExceededException, backing of $backoff ms, retries left ${retries.get()}")
+            Thread.sleep(backoff.toMillis)
+          }.flatMap(_ => retry(backoff * 2, retries)(f))
+        } else Future.failed(e)
     }
   }
+}
 
-  implicit object DescribeDescribe extends Describe[DescribeTableRequest] {
-    def desc(aws: DescribeTableRequest): String = s"DescribeTableRequest(${aws.getTableName})"
-  }
+object Describe {
 
-  implicit object QueryDescribe extends Describe[QueryRequest] {
-    def desc(aws: QueryRequest): String = s"QueryRequest(${aws.getTableName},${aws.getExpressionAttributeValues})"
-  }
-
-  implicit object PutItemDescribe extends Describe[PutItemRequest] {
-    def desc(aws: PutItemRequest): String = s"PutItemRequest(${aws.getTableName},${formatKey(aws.getItem)})"
-  }
-
-  implicit object DeleteDescribe extends Describe[DeleteItemRequest] {
-    def desc(aws: DeleteItemRequest): String = s"DeleteItemRequest(${aws.getTableName},${formatKey(aws.getKey)})"
-  }
-
-  implicit object BatchGetItemDescribe extends Describe[BatchGetItemRequest] {
-    def desc(aws: BatchGetItemRequest): String = {
-      val entry = aws.getRequestItems.entrySet.iterator.next()
-      val table = entry.getKey
-      val keys = entry.getValue.getKeys.asScala.map(formatKey)
-      s"BatchGetItemRequest($table, ${keys.mkString("(", ",", ")")})"
+  private def formatKey(i: Item): String = {
+    val key = i.get(Key) match {
+      case null => "<none>"
+      case x    => x.getS
     }
+    val sort = i.get(Sort) match {
+      case null => "<none>"
+      case x    => x.getN
+    }
+    s"[$Key=$key,$Sort=$sort]"
   }
 
-  implicit object BatchWriteItemDescribe extends Describe[BatchWriteItemRequest] {
-    def desc(aws: BatchWriteItemRequest): String = {
+  def describe(request: AmazonWebServiceRequest): String = request match {
+
+    case aws: BatchWriteItemRequest =>
       val entry = aws.getRequestItems.entrySet.iterator.next()
       val table = entry.getKey
       val keys = entry.getValue.asScala.map { write =>
@@ -140,46 +124,17 @@ trait DynamoDBHelper {
         }
       }
       s"BatchWriteItemRequest($table, ${keys.mkString("(", ",", ")")})"
-    }
+    case aws: BatchGetItemRequest =>
+      val entry = aws.getRequestItems.entrySet.iterator.next()
+      val table = entry.getKey
+      val keys = entry.getValue.getKeys.asScala.map(formatKey)
+      s"BatchGetItemRequest($table, ${keys.mkString("(", ",", ")")})"
+
+    case aws: DeleteItemRequest    => s"DeleteItemRequest(${aws.getTableName},${formatKey(aws.getKey)})"
+    case aws: PutItemRequest       => s"PutItemRequest(${aws.getTableName},${formatKey(aws.getItem)})"
+    case aws: QueryRequest         => s"QueryRequest(${aws.getTableName},${aws.getExpressionAttributeValues})"
+    case aws: DescribeTableRequest => s"DescribeTableRequest(${aws.getTableName})"
+    case aws                       => aws.getClass.getSimpleName
   }
-
-  def listTables(aws: ListTablesRequest): Future[ListTablesResult] =
-    send[ListTablesRequest, ListTablesResult](aws, dynamoDB.listTablesAsync(aws, _))
-
-  def describeTable(aws: DescribeTableRequest): Future[DescribeTableResult] =
-    send[DescribeTableRequest, DescribeTableResult](aws, dynamoDB.describeTableAsync(aws, _))
-
-  def createTable(aws: CreateTableRequest): Future[CreateTableResult] =
-    send[CreateTableRequest, CreateTableResult](aws, dynamoDB.createTableAsync(aws, _))
-
-  def updateTable(aws: UpdateTableRequest): Future[UpdateTableResult] =
-    send[UpdateTableRequest, UpdateTableResult](aws, dynamoDB.updateTableAsync(aws, _))
-
-  def deleteTable(aws: DeleteTableRequest): Future[DeleteTableResult] =
-    send[DeleteTableRequest, DeleteTableResult](aws, dynamoDB.deleteTableAsync(aws, _))
-
-  def query(aws: QueryRequest): Future[QueryResult] =
-    send[QueryRequest, QueryResult](aws, dynamoDB.queryAsync(aws, _))
-
-  def scan(aws: ScanRequest): Future[ScanResult] =
-    send[ScanRequest, ScanResult](aws, dynamoDB.scanAsync(aws, _))
-
-  def putItem(aws: PutItemRequest): Future[PutItemResult] =
-    send[PutItemRequest, PutItemResult](aws, dynamoDB.putItemAsync(aws, _))
-
-  def getItem(aws: GetItemRequest): Future[GetItemResult] =
-    send[GetItemRequest, GetItemResult](aws, dynamoDB.getItemAsync(aws, _))
-
-  def updateItem(aws: UpdateItemRequest): Future[UpdateItemResult] =
-    send[UpdateItemRequest, UpdateItemResult](aws, dynamoDB.updateItemAsync(aws, _))
-
-  def deleteItem(aws: DeleteItemRequest): Future[DeleteItemResult] =
-    send[DeleteItemRequest, DeleteItemResult](aws, dynamoDB.deleteItemAsync(aws, _))
-
-  def batchWriteItem(aws: BatchWriteItemRequest): Future[BatchWriteItemResult] =
-    send[BatchWriteItemRequest, BatchWriteItemResult](aws, dynamoDB.batchWriteItemAsync(aws, _))
-
-  def batchGetItem(aws: BatchGetItemRequest): Future[BatchGetItemResult] =
-    send[BatchGetItemRequest, BatchGetItemResult](aws, dynamoDB.batchGetItemAsync(aws, _))
 
 }

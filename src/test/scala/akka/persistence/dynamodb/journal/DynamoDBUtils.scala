@@ -23,7 +23,7 @@ trait DynamoDBUtils {
   lazy val settings = {
     val c = system.settings.config
     val config = c.getConfig(c.getString("akka.persistence.journal.plugin"))
-    new DynamoDBJournalConfig(config)
+    new DynamoDBJournalPluginConfig(config)
   }
   import settings._
 
@@ -33,7 +33,7 @@ trait DynamoDBUtils {
 
   def ensureJournalTableExists(read: Long = 10L, write: Long = 10L): Unit = {
     val create = schema
-      .withTableName(JournalTable)
+      .withTableName(Table)
       .withProvisionedThroughput(new ProvisionedThroughput(read, write))
 
     var names = Vector.empty[String]
@@ -48,7 +48,7 @@ trait DynamoDBUtils {
     val list = client.listTables(new ListTablesRequest).flatMap(complete)
 
     val setup = for {
-      exists <- list.map(_ contains JournalTable)
+      exists <- list.map(_ contains Table)
       _ <- {
         if (exists) Future.successful(())
         else client.createTable(create)

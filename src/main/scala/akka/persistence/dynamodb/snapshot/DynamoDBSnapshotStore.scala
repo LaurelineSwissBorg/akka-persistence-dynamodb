@@ -4,27 +4,23 @@
 package akka.persistence.dynamodb.snapshot
 
 import akka.actor.ActorLogging
-import akka.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
+import akka.persistence.dynamodb._
 import akka.persistence.snapshot.SnapshotStore
+import akka.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
 import akka.serialization.SerializationExtension
 import com.typesafe.config.Config
 
-import akka.persistence.dynamodb._
 import scala.concurrent.Future
 
 class DynamoDBSnapshotStore(config: Config) extends SnapshotStore with DynamoDBSnapshotRequests with ActorLogging {
-  val settings = new DynamoDBSnapshotConfig(config)
+  val settings = new DynamoDBSnapshotPluginConfig(config)
   val dynamo = dynamoClient(context.system, settings)
   val serialization = SerializationExtension(context.system)
-  import settings._
 
   override def preStart(): Unit = {
     // eager initialization, but not from constructor
     self ! DynamoDBSnapshotStore.Init
   }
-
-  override def postStop(): Unit =
-    dynamo.shutdown()
 
   override def loadAsync(persistenceId: String, criteria: SnapshotSelectionCriteria): Future[Option[SelectedSnapshot]] =
     load(persistenceId, criteria)

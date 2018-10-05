@@ -3,23 +3,21 @@
  */
 package akka.persistence.dynamodb.snapshot
 
-import java.lang.Integer
-import java.util.{ Collections, HashMap => JHMap, List => JList, Map => JMap }
+import java.util.{ HashMap ⇒ JHMap }
 
-import akka.persistence.dynamodb.{ DynamoDBRequests, Item }
-import akka.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
+import akka.persistence.dynamodb.{ DynamoDBRequests, Item, _ }
 import akka.persistence.serialization.Snapshot
+import akka.persistence.{ SelectedSnapshot, SnapshotMetadata, SnapshotSelectionCriteria }
 import com.amazonaws.services.dynamodbv2.model._
 
-import collection.JavaConverters._
+import scala.collection.JavaConverters._
 import scala.concurrent.Future
-import akka.persistence.dynamodb._
 
 trait DynamoDBSnapshotRequests extends DynamoDBRequests {
   this: DynamoDBSnapshotStore =>
 
-  import settings._
   import context.dispatcher
+  import settings._
 
   val toUnit: Any => Unit = _ => ()
 

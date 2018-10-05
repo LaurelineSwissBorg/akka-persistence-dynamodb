@@ -21,6 +21,9 @@ import akka.persistence.dynamodb._
 
 trait DynamoDBJournalRequests extends DynamoDBRequests {
   this: DynamoDBJournal =>
+
+  implicit val ec: ExecutionContext = dynamo.ec
+
   import settings._
 
   /**
@@ -144,7 +147,7 @@ trait DynamoDBJournalRequests extends DynamoDBRequests {
         ws += putReq(toHSItem(repr.persistenceId, repr.sequenceNr))
         ws
     }
-    val reqItems = Collections.singletonMap(JournalTable, writes.asJava)
+    val reqItems = Collections.singletonMap(Table, writes.asJava)
     batchWriteReq(reqItems)
   }
 
@@ -222,13 +225,13 @@ trait DynamoDBJournalRequests extends DynamoDBRequests {
     retriesRemaining: Int                  = 10,
     backoff:          FiniteDuration       = 1.millis
   ): Future[BatchWriteItemResult] = {
-    val unprocessed: Int = result.getUnprocessedItems.get(JournalTable) match {
+    val unprocessed: Int = result.getUnprocessedItems.get(Table) match {
       case null  => 0
       case items => items.size
     }
     if (unprocessed == 0) Future.successful(result)
     else if (retriesRemaining == 0) {
-      throw new RuntimeException(s"unable to batch write ${result.getUnprocessedItems.get(JournalTable)} after 10 tries")
+      throw new RuntimeException(s"unable to batch write ${result.getUnprocessedItems.get(Table)} after 10 tries")
     } else {
       val rest = batchWriteReq(result.getUnprocessedItems)
       after(backoff, context.system.scheduler)(dynamo.batchWriteItem(rest).flatMap(r => sendUnprocessedItems(r, retriesRemaining - 1, backoff * 2)))

@@ -105,7 +105,7 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
   import DynamoDBRecovery._
   import settings._
 
-  implicit lazy val replayDispatcher = context.system.dispatchers.lookup(ReplayDispatcher)
+  // implicit lazy val replayDispatcher = context.system.dispatchers.lookup(ReplayDispatcher)
 
   override def asyncReplayMessages(
     persistenceId:  String,
@@ -121,10 +121,10 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
         Source(start to toSequenceNr)
           .grouped(MaxBatchGet)
           .mapAsync(ReplayParallelism)(batch => getReplayBatch(persistenceId, batch).map(_.sorted))
-          .mapConcat(conforms)
+          .mapConcat(identity)
           .take(max)
           .via(RemoveIncompleteAtoms)
-          .mapConcat(conforms)
+          .mapConcat(identity)
           .map(readPersistentRepr)
           .runFold(0) { (count, next) => replayCallback(next); count + 1 }
           .map(count => log.debug("replay finished for {} with {} events", persistenceId, count))
@@ -137,11 +137,11 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
       .withKeys(batchKeys.map(_._1).asJava)
       .withConsistentRead(true)
       .withAttributesToGet(Key, Sort, Payload, AtomEnd, AtomIndex)
-    val get = batchGetReq(Collections.singletonMap(JournalTable, keyAttr))
+    val get = batchGetReq(Collections.singletonMap(Table, keyAttr))
     dynamo.batchGetItem(get).flatMap(getUnprocessedItems(_)).map {
       result =>
         ReplayBatch(
-          result.getResponses.get(JournalTable).asScala,
+          result.getResponses.get(Table).asScala,
           batchKeys.iterator.map(p => p._1.get(Key) -> p._2).toMap
         )
     }
@@ -216,7 +216,7 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
       .grouped(MaxBatchGet)
       .map { keys =>
         val ka = new KeysAndAttributes().withKeys(keys.asJava).withConsistentRead(true)
-        val get = batchGetReq(Collections.singletonMap(JournalTable, ka))
+        val get = batchGetReq(Collections.singletonMap(Table, ka))
         dynamo.batchGetItem(get).flatMap(getUnprocessedItems(_))
       }
 
@@ -224,7 +224,7 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
     if (resp.getResponses.isEmpty) 0L
     else {
       var ret = 0L
-      resp.getResponses.get(JournalTable).forEach(new Consumer[Item] {
+      resp.getResponses.get(Table).forEach(new Consumer[Item] {
         override def accept(item: Item): Unit = {
           val seq = item.get(SequenceNr) match {
             case null => 0L
@@ -240,7 +240,7 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
     if (resp.getResponses.isEmpty()) Nil
     else {
       var ret: List[Long] = Nil
-      resp.getResponses.get(JournalTable).forEach(new Consumer[Item] {
+      resp.getResponses.get(Table).forEach(new Consumer[Item] {
         override def accept(item: Item): Unit = {
           item.get(SequenceNr) match {
             case null =>
@@ -255,18 +255,18 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
     persistentFromByteBuffer(item.get(Payload).getB)
 
   def getUnprocessedItems(result: BatchGetItemResult, retriesRemaining: Int = 10): Future[BatchGetItemResult] = {
-    val unprocessed = result.getUnprocessedKeys.get(JournalTable) match {
+    val unprocessed = result.getUnprocessedKeys.get(Table) match {
       case null => 0
       case x    => x.getKeys.size
     }
     if (unprocessed == 0) Future.successful(result)
     else if (retriesRemaining == 0) {
-      Future.failed(new DynamoDBJournalFailure(s"unable to batch get ${result.getUnprocessedKeys.get(JournalTable).getKeys} after 10 tries"))
+      Future.failed(new DynamoDBJournalFailure(s"unable to batch get ${result.getUnprocessedKeys.get(Table).getKeys} after 10 tries"))
     } else {
       val rest = batchGetReq(result.getUnprocessedKeys)
       dynamo.batchGetItem(rest).map { rr =>
-        val items = rr.getResponses.get(JournalTable)
-        val responses = result.getResponses.get(JournalTable)
+        val items = rr.getResponses.get(Table)
+        val responses = result.getResponses.get(Table)
         items.forEach(new Consumer[Item] {
           override def accept(item: Item): Unit = responses.add(item)
         })
@@ -291,7 +291,7 @@ trait DynamoDBRecovery extends AsyncRecovery { this: DynamoDBJournal =>
 
   def eventQuery(persistenceId: String, sequenceNr: Long) =
     new QueryRequest()
-      .withTableName(JournalTable)
+      .withTableName(Table)
       .withKeyConditionExpression(Key + " = :kkey")
       .withExpressionAttributeValues(Collections.singletonMap(":kkey", S(messagePartitionKey(persistenceId, sequenceNr))))
       .withProjectionExpression("num")

@@ -30,7 +30,6 @@ class DeletionSpec extends TestKit(ActorSystem("FailureReportingSpec"))
      */
     Thread.sleep(500)
     system.terminate().futureValue
-    client.shutdown()
   }
 
   override val persistenceId = "DeletionSpec"

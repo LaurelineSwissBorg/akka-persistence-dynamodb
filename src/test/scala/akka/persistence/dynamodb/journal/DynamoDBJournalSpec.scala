@@ -22,7 +22,6 @@ class DynamoDBJournalSpec extends JournalSpec(ConfigFactory.load()) with DynamoD
 
   override def afterAll(): Unit = {
     super.afterAll()
-    client.shutdown()
   }
 
   override def writeMessages(fromSnr: Int, toSnr: Int, pid: String, sender: ActorRef, writerUuid: String): Unit = {

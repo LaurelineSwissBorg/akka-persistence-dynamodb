@@ -26,7 +26,6 @@ class RecoveryConsistencySpec extends TestKit(ActorSystem("FailureReportingSpec"
 
   override def beforeAll(): Unit = ensureJournalTableExists()
   override def afterAll(): Unit = {
-    client.shutdown()
     system.terminate().futureValue
   }
 
@@ -152,6 +151,6 @@ class RecoveryConsistencySpec extends TestKit(ActorSystem("FailureReportingSpec"
     val key: Item = new JHMap
     key.put(Key, S(s"$JournalName-P-$persistenceId-${num / 100}"))
     key.put(Sort, N(num % 100))
-    client.deleteItem(new DeleteItemRequest().withTableName(JournalTable).withKey(key)).futureValue
+    client.deleteItem(new DeleteItemRequest().withTableName(Table).withKey(key)).futureValue
   }
 }

@@ -4,15 +4,14 @@
 package akka.persistence.dynamodb.journal
 
 import java.util.UUID
+
 import akka.actor._
 import akka.persistence._
 import akka.testkit._
-import com.amazonaws.services.dynamodbv2.model.{ CreateTableRequest, DeleteTableRequest, ListTablesRequest, ProvisionedThroughput }
-import com.typesafe.config.{ Config, ConfigFactory, ConfigValueFactory }
+import com.typesafe.config.ConfigFactory
 import org.scalatest._
-import scala.concurrent.Await
+
 import scala.concurrent.duration._
-import scala.concurrent.Future
 
 /**
  * This class is pulled from https://github.com/krasserm/akka-persistence-cassandra/
@@ -20,14 +19,13 @@ import scala.concurrent.Future
  */
 object DynamoDBIntegrationLoadSpec {
 
-  val config = ConfigFactory.parseString("""
+  val config = ConfigFactory.parseString(s"""
 my-dynamodb-journal {
   journal-table = "integrationLoadSpec"
-  endpoint = ${?AWS_DYNAMODB_ENDPOINT}
-  aws-access-key-id = "set something in case no real creds are there"
-  aws-access-key-id = ${?AWS_ACCESS_KEY_ID}
-  aws-secret-access-key = "set something in case no real creds are there"
-  aws-secret-access-key = ${?AWS_SECRET_ACCESS_KEY}
+  dynamodb = {
+    host = "localhost"
+    port = 8000
+  }
 }
 """).resolve.withFallback(ConfigFactory.load())
 
@@ -105,6 +103,8 @@ my-dynamodb-journal {
     override def preStart() = ()
   }
 
+  /*
+  TODO: Find a replacement ...
   class ViewA(val viewId: String, val persistenceId: String, probe: ActorRef) extends PersistentView {
     def receive = {
       case payload =>
@@ -115,6 +115,7 @@ my-dynamodb-journal {
 
     override def autoUpdateReplayMax: Long = 0
   }
+  */
 
   class Listener extends Actor {
     def receive = {
@@ -123,7 +124,7 @@ my-dynamodb-journal {
   }
 }
 
-import DynamoDBIntegrationLoadSpec._
+import akka.persistence.dynamodb.journal.DynamoDBIntegrationLoadSpec._
 
 class DynamoDBIntegrationLoadSpec
     extends TestKit(ActorSystem("test", config))
@@ -139,7 +140,6 @@ class DynamoDBIntegrationLoadSpec
   }
 
   override def afterAll(): Unit = {
-    client.shutdown()
     system.terminate()
   }
 
@@ -198,6 +198,9 @@ class DynamoDBIntegrationLoadSpec
       val persistenceId = UUID.randomUUID().toString
       testRangeDelete(persistenceId)
     }
+
+    /*
+    TODO: Find a replacement ...
     "replay messages incrementally" in {
       val persistenceId = UUID.randomUUID().toString
       val probe = TestProbe()
@@ -222,6 +225,8 @@ class DynamoDBIntegrationLoadSpec
       probe.expectMsg(s"a-6")
       probe.expectNoMsg(200.millis)
     }
+    */
+
     "write and replay with persistAll greater than partition size skipping whole partition" in {
       val persistenceId = UUID.randomUUID().toString
       val probe = TestProbe()
