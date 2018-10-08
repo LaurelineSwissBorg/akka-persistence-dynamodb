@@ -8,8 +8,6 @@ val akkaVersion = "2.5.17"
 val amzVersion  = "1.11.66"
 
 libraryDependencies ++= Seq(
-  "com.amazonaws"      % "aws-java-sdk-core"             % amzVersion,
-  "com.amazonaws"      % "aws-java-sdk-dynamodb"         % amzVersion,
   "com.lightbend.akka" %% "akka-stream-alpakka-dynamodb" % "1.0-M1",
   "com.typesafe.akka"  %% "akka-persistence"             % akkaVersion,
   "com.typesafe.akka"  %% "akka-persistence-query"       % akkaVersion,

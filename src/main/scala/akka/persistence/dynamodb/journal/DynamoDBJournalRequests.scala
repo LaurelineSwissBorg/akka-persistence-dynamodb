@@ -22,7 +22,7 @@ import akka.persistence.dynamodb._
 trait DynamoDBJournalRequests extends DynamoDBRequests {
   this: DynamoDBJournal =>
 
-  implicit val ec: ExecutionContext = dynamo.ec
+  implicit val ec: ExecutionContext
 
   import settings._
 

@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import akka.actor.{ ActorRef, ActorSystem, Scheduler }
 import akka.event.LoggingAdapter
 import akka.persistence.dynamodb.{ DynamoDBPluginConfig, Item }
-import akka.stream.alpakka.dynamodb.scaladsl.DynamoDb
+import akka.stream.alpakka.dynamodb.scaladsl.{ DynamoDb, DynamoDbExternal }
 import akka.stream.alpakka.dynamodb.{ AwsOp, DynamoClient }
 import com.amazonaws.AmazonWebServiceRequest
 import com.amazonaws.services.dynamodbv2.model._
@@ -27,7 +27,7 @@ trait DynamoDBHelper {
   implicit val ec: ExecutionContext
   implicit val sys: ActorSystem
   val scheduler: Scheduler
-  val dynamoDB: DynamoClient
+  implicit val dynamoDB: DynamoClient
   val log: LoggingAdapter
   val settings: DynamoDBPluginConfig
 
@@ -65,7 +65,7 @@ trait DynamoDBHelper {
     val initialBackoff = settings.ApiRequestInitialBackoff.millis
     val start = System.nanoTime()
     val operationName = Describe.describe(awsOp.request)
-    val f = retry(initialBackoff, remainingRetries)(() => DynamoDb.single(awsOp))
+    val f = retry(initialBackoff, remainingRetries)(() => DynamoDbExternal.single(awsOp))
 
     reporter.foreach(r => f.onComplete(_ => r ! LatencyReport(System.nanoTime - start, settings.ApiRequestMaxRetries - remainingRetries.get())))
 

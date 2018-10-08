@@ -77,7 +77,7 @@ class DynamoDBJournal(config: Config) extends AsyncWriteJournal with DynamoDBRec
 
   val dynamo = dynamoClient(context.system, settings)
 
-  implicit val ec2 = dynamo.ec
+  override implicit val ec = dynamo.ec
 
   dynamo.describeTable(new DescribeTableRequest().withTableName(Table)).onComplete {
     case Success(result) => log.info("using DynamoDB table {}", result)
