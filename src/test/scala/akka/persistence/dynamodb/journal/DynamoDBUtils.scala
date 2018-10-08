@@ -4,18 +4,25 @@
 package akka.persistence.dynamodb.journal
 
 import com.amazonaws.services.dynamodbv2.model._
+
 import scala.concurrent.Await
 import akka.actor.ActorSystem
+
 import scala.concurrent.Future
 import scala.concurrent.duration._
 import akka.persistence.Persistence
 import akka.util.Timeout
 import java.util.UUID
+import java.util.logging.Logger
+
 import akka.persistence.PersistentRepr
+
 import scala.collection.JavaConverters._
 import akka.persistence.dynamodb._
 
 trait DynamoDBUtils {
+
+  val logger = Logger.getLogger(getClass.getName)
 
   val system: ActorSystem
   import system.dispatcher
@@ -47,13 +54,27 @@ trait DynamoDBUtils {
       }
     val list = client.listTables(new ListTablesRequest).flatMap(complete)
 
+    list.foreach {
+      tables ⇒
+        logger.info(s"Tables: ${tables}")
+    }
+
     val setup = for {
       exists <- list.map(_ contains Table)
       _ <- {
-        if (exists) Future.successful(())
-        else client.createTable(create)
+        if (exists) {
+          logger.info(s"Table $Table exists")
+          Future.successful(())
+        } else {
+          logger.info(s"Creating $Table")
+          client.createTable(create)
+        }
       }
     } yield ()
+
+    setup.foreach { _ ⇒
+      logger.info("Setup Complete")
+    }
     Await.result(setup, 5.seconds)
   }
 

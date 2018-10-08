@@ -23,8 +23,13 @@ object DynamoDBIntegrationLoadSpec {
 my-dynamodb-journal {
   journal-table = "integrationLoadSpec"
   dynamodb = {
-    host = "localhost"
-    port = 8000
+      host = "localhost"
+      post = 8000
+      tls = false
+      credentials {
+          access-key-id = "Dummy"
+          secret-key-id = "Dummy"
+      }
   }
 }
 """).resolve.withFallback(ConfigFactory.load())

@@ -80,9 +80,18 @@ object WriteThroughputBench extends App with DynamoDBUtils {
     ConfigFactory.systemProperties().withFallback(ConfigFactory.parseString("""
 my-dynamodb-journal {
   journal-table = "WriteThroughputBench"
-  endpoint = ${?AWS_DYNAMODB_ENDPOINT}
-  aws-access-key-id = ${?AWS_ACCESS_KEY_ID}
-  aws-secret-access-key = ${?AWS_SECRET_ACCESS_KEY}
+
+  dynamodb = {
+      host = "localhost"
+      post = 8000
+      tls = false
+      tls = false
+      credentials {
+          access-key-id = "Dummy"
+          secret-key-id = "Dummy"
+      }
+  }
+
   aws-client-config {
     max-connections = 100
   }
